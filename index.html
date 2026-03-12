@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clip Fmt — Claude → Chat Formatter</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+  .controls { display: flex; gap: 12px; padding: 16px 20px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; align-items: center; flex-wrap: wrap; }
+  .controls label { font-size: 13px; color: #888; }
+  .controls select, .controls button { background: #2a2a2a; color: #e0e0e0; border: 1px solid #3a3a3a; border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  .controls select:hover, .controls button:hover { border-color: #5a5a5a; }
+  .controls button.copy { background: #3b82f6; border-color: #3b82f6; color: #fff; font-weight: 600; }
+  .controls button.copy:hover { background: #2563eb; }
+  .controls button.copy.copied { background: #22c55e; border-color: #22c55e; }
+  .panels { display: flex; flex: 1; min-height: 0; }
+  .panel { flex: 1; display: flex; flex-direction: column; }
+  .panel:first-child { border-right: 1px solid #2a2a2a; }
+  .panel-header { padding: 8px 16px; font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; background: #151515; border-bottom: 1px solid #2a2a2a; }
+  textarea { flex: 1; background: #0f0f0f; color: #e0e0e0; border: none; padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.6; resize: none; outline: none; }
+  .output-area { flex: 1; background: #0f0f0f; color: #e0e0e0; padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.6; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; }
+  .output-area mark { background: #854d0e; color: #fbbf24; border-radius: 2px; padding: 0 2px; }
+  .sep { color: #444; margin: 0 4px; }
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <label>Input:</label>
+  <select id="inputSource">
+    <option value="cli">CLI Terminal</option>
+    <option value="markdown">Markdown</option>
+  </select>
+  <span class="sep">→</span>
+  <label>Output:</label>
+  <select id="outputFormat">
+    <option value="whatsapp">WhatsApp</option>
+    <option value="discord">Discord</option>
+    <option value="x">X (Twitter)</option>
+  </select>
+  <button class="copy" id="copyBtn">Copy</button>
+</div>
+
+<div class="panels">
+  <div class="panel">
+    <div class="panel-header">Input</div>
+    <textarea id="input" placeholder="Paste Claude output here..." spellcheck="false"></textarea>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Output</div>
+    <div class="output-area" id="output"></div>
+  </div>
+</div>
+
+<script>
+const inputEl = document.getElementById('input');
+const outputEl = document.getElementById('output');
+const inputSourceEl = document.getElementById('inputSource');
+const outputFormatEl = document.getElementById('outputFormat');
+const copyBtn = document.getElementById('copyBtn');
+
+// --- Processing Pipeline ---
+
+function cleanCLI(text) {
+  // Strip leading 2-space (or more) indentation from each line
+  let lines = text.split('\n');
+  lines = lines.map(l => l.replace(/^  +/, ''));
+
+  // Group lines into paragraphs (separated by blank lines)
+  // then rejoin lines within each paragraph
+  const paragraphs = [];
+  let current = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (line === '') {
+      if (current.length > 0) {
+        paragraphs.push(current.join(' '));
+        current = [];
+      }
+      paragraphs.push('');
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) {
+    paragraphs.push(current.join(' '));
+  }
+
+  // Collapse multiple blank lines into one
+  const output = [];
+  let lastWasBlank = false;
+  for (const p of paragraphs) {
+    if (p === '') {
+      if (!lastWasBlank) {
+        output.push('');
+        lastWasBlank = true;
+      }
+    } else {
+      output.push(p);
+      lastWasBlank = false;
+    }
+  }
+
+  return output.join('\n').trim();
+}
+
+function cleanMarkdown(text) {
+  // Markdown input is already well-formatted, just trim
+  return text.trim();
+}
+
+function convertMarkdown(text, format) {
+  let out = text;
+
+  switch (format) {
+    case 'whatsapp':
+      // Order matters: italic first (single *), then bold (double **), then headers
+      // Use placeholders to prevent double-conversion
+      // Step 1: Protect bold by converting to placeholder
+      out = out.replace(/\*\*(.+?)\*\*/g, '\x01WABOLD\x02$1\x01/WABOLD\x02');
+      // Step 2: Convert italic *text* → _text_
+      out = out.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, '_$1_');
+      // Step 3: Restore bold placeholders as WhatsApp bold *text*
+      out = out.replace(/\x01WABOLD\x02(.+?)\x01\/WABOLD\x02/g, '*$1*');
+      // Headers: # Title → *Title* (WhatsApp bold)
+      out = out.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+      // Strikethrough: ~~text~~ → ~text~
+      out = out.replace(/~~(.+?)~~/g, '~$1~');
+      // Bullet points: - item → • item
+      out = out.replace(/^[-*]\s+/gm, '• ');
+      // Code blocks: ```lang\n...\n``` → ```\n...\n```
+      out = out.replace(/```\w*\n/g, '```\n');
+      break;
+
+    case 'discord':
+      // Discord supports standard markdown, mostly keep as-is
+      // Headers: # Title → **Title**
+      out = out.replace(/^#{1,6}\s+(.+)$/gm, '**$1**');
+      // Bold, italic, strikethrough, code: already correct for Discord
+      break;
+
+    case 'x':
+      // X has no formatting — strip all markdown
+      // Headers: # Title → TITLE
+      out = out.replace(/^#{1,6}\s+(.+)$/gm, (_, title) => title.toUpperCase());
+      // Bold: **text** → text
+      out = out.replace(/\*\*(.+?)\*\*/g, '$1');
+      // Italic: *text* → text
+      out = out.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, '$1');
+      // Strikethrough: ~~text~~ → text
+      out = out.replace(/~~(.+?)~~/g, '$1');
+      // Bullet points: - item → • item
+      out = out.replace(/^[-*]\s+/gm, '• ');
+      // Inline code: `code` → code
+      out = out.replace(/`([^`]+)`/g, '$1');
+      // Code blocks: remove fences
+      out = out.replace(/```\w*\n([\s\S]*?)```/g, '$1');
+      break;
+  }
+
+  return out;
+}
+
+function process() {
+  const raw = inputEl.value;
+  if (!raw.trim()) {
+    outputEl.innerHTML = '';
+    outputEl.dataset.cleanText = '';
+    return;
+  }
+
+  const source = inputSourceEl.value;
+  const format = outputFormatEl.value;
+
+  // Step 1: Clean based on input source
+  let cleaned = source === 'cli' ? cleanCLI(raw) : cleanMarkdown(raw);
+
+  // Step 2: Convert markdown to target format
+  cleaned = convertMarkdown(cleaned, format);
+
+  // Step 3: Replace em dashes with placeholder, then render highlighted
+  // Use a unique placeholder so we only highlight actual em dash replacements
+  const MARKER = '\x00EMDASH\x00';
+  const markedText = cleaned.replace(/\s*—\s*/g, MARKER);
+  const cleanText = markedText.replace(new RegExp(MARKER, 'g'), ' - ');
+
+  // Build display HTML: escape first, then replace markers with highlighted version
+  const escapedMarked = escapeHTML(markedText);
+  const displayHTML = escapedMarked.replace(
+    new RegExp(escapeHTML(MARKER), 'g'),
+    '<mark> - </mark>'
+  );
+
+  outputEl.innerHTML = displayHTML;
+  outputEl.dataset.cleanText = cleanText;
+}
+
+function escapeHTML(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// --- Event Listeners ---
+
+inputEl.addEventListener('input', process);
+inputSourceEl.addEventListener('change', process);
+outputFormatEl.addEventListener('change', process);
+
+copyBtn.addEventListener('click', async () => {
+  const text = outputEl.dataset.cleanText || outputEl.textContent;
+  if (!text.trim()) return;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    copyBtn.textContent = 'Copied!';
+    copyBtn.classList.add('copied');
+    setTimeout(() => {
+      copyBtn.textContent = 'Copy';
+      copyBtn.classList.remove('copied');
+    }, 1500);
+  } catch (e) {
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    copyBtn.textContent = 'Copied!';
+    copyBtn.classList.add('copied');
+    setTimeout(() => {
+      copyBtn.textContent = 'Copy';
+      copyBtn.classList.remove('copied');
+    }, 1500);
+  }
+});
+</script>
+</body>
+</html>
