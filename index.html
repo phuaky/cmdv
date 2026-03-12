@@ -73,25 +73,34 @@ function cleanCLI(text) {
   lines = lines.map(l => l.replace(/^  +/, ''));
 
   // Group lines into paragraphs (separated by blank lines)
-  // then rejoin lines within each paragraph
+  // List items (- item, * item, 1. item) stay as separate lines
+  const isList = (l) => /^[-*•]\s+/.test(l) || /^\d+[.)]\s+/.test(l);
+
   const paragraphs = [];
   let current = [];
+
+  const flushCurrent = () => {
+    if (current.length > 0) {
+      paragraphs.push(current.join(' '));
+      current = [];
+    }
+  };
 
   for (const rawLine of lines) {
     const line = rawLine.trimEnd();
     if (line === '') {
-      if (current.length > 0) {
-        paragraphs.push(current.join(' '));
-        current = [];
-      }
+      flushCurrent();
       paragraphs.push('');
+    } else if (isList(line)) {
+      // List items: flush any accumulated paragraph text first,
+      // then add the list item as its own line
+      flushCurrent();
+      paragraphs.push(line);
     } else {
       current.push(line);
     }
   }
-  if (current.length > 0) {
-    paragraphs.push(current.join(' '));
-  }
+  flushCurrent();
 
   // Collapse multiple blank lines into one
   const output = [];
