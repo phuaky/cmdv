@@ -70,7 +70,7 @@ const copyBtn = document.getElementById('copyBtn');
 function cleanCLI(text) {
   // Strip leading 2-space (or more) indentation from each line
   let lines = text.split('\n');
-  lines = lines.map(l => l.replace(/^  +/, ''));
+  lines = lines.map(l => l.replace(/^  +/, '').replace(/^▎\s?/, ''));
 
   // Group lines into paragraphs (separated by blank lines)
   // List items (- item, * item, 1. item) stay as separate lines
